@@ -7,8 +7,8 @@ namespace UpdateFieldCodeGenerator.Formats
 {
     public class WowPacketParserHandler : UpdateFieldHandlerBase
     {
-        private static readonly string ModuleName = "V8_0_1_27101";
-        private static readonly string Version = "V8_3_0_32861";
+        private const string ModuleName = "V9_0_1_36216";
+        private const string Version = "V9_0_2_36639";
 
         public WowPacketParserHandler() : base(new StreamWriter("UpdateFieldsHandler.cs"), null)
         {
@@ -210,7 +210,11 @@ namespace UpdateFieldCodeGenerator.Formats
             }
 
             if (!_create && _writeUpdateMasks)
+            {
                 GenerateBitIndexConditions(updateField, name, flowControl, previousControlFlow, arrayLoopBlockIndex);
+                if (name.EndsWith("is_initialized()"))
+                    flowControl.RemoveAt(1); // bit generated but not checked for is_initialized
+            }
 
             Type interfaceType = null;
             if (updateField.SizeForField != null)
@@ -254,7 +258,10 @@ namespace UpdateFieldCodeGenerator.Formats
             _fieldWrites.Add((name, true, (pcf) =>
             {
                 WriteControlBlocks(_source, flowControl, pcf);
-                _source.WriteLine($"{GetIndent()}data.{nameUsedToWrite}.Resize(packet.ReadUInt32());");
+                if (updateField.BitSize > 0)
+                    _source.WriteLine($"{GetIndent()}data.{nameUsedToWrite}.Resize(packet.ReadBits({updateField.BitSize}));");
+                else
+                    _source.WriteLine($"{GetIndent()}data.{nameUsedToWrite}.Resize(packet.ReadUInt32());");
                 _indent = 3;
                 return flowControl;
             }
@@ -284,7 +291,8 @@ namespace UpdateFieldCodeGenerator.Formats
             _fieldWrites.Add((name, true, (pcf) =>
             {
                 WriteControlBlocks(_source, flowControl, pcf);
-                _source.WriteLine($"{GetIndent()}data.{nameUsedToWrite}.ReadUpdateMask(packet);");
+                var bitCountArgument = updateField.BitSize > 0 ? ", " + updateField.BitSize : "";
+                _source.WriteLine($"{GetIndent()}data.{nameUsedToWrite}.ReadUpdateMask(packet{bitCountArgument});");
                 _indent = 3;
                 return flowControl;
             }
@@ -321,8 +329,6 @@ namespace UpdateFieldCodeGenerator.Formats
         {
             name = RenameField(name);
             var flowControl = new List<FlowControlBlock>();
-            if (_create && updateField.Flag != UpdateFieldFlag.None)
-                flowControl.Add(new FlowControlBlock { Statement = $"if ((flags & {updateField.Flag.ToFlagsExpression(" | ", "UpdateFieldFlag.", "", "(", ")")}) != UpdateFieldFlag.None)" });
 
             var nameUsedToWrite = name;
             var arrayLoopBlockIndex = -1;
@@ -410,12 +416,19 @@ namespace UpdateFieldCodeGenerator.Formats
             _source.Write(GetIndent());
             if (name.EndsWith("size()"))
             {
-                outputFieldName = outputFieldName.Substring(0, outputFieldName.Length - 8);
+                outputFieldName = outputFieldName.Substring(0, outputFieldName.Length - 9);
                 var interfaceName = RenameType(TypeHandler.GetFriendlyName(interfaceType));
-                if (_create)
+                if (_create || !_isRoot)
                     _source.WriteLine($"data.{outputFieldName} = new {interfaceName}[packet.ReadUInt32()];");
                 else
                     _source.WriteLine($"data.{outputFieldName} = Enumerable.Range(0, (int)packet.ReadBits(32)).Select(x => new {RenameType(TypeHandler.GetFriendlyName(type))}()).Cast<{interfaceName}>().ToArray();");
+                return;
+            }
+
+            if (name.EndsWith("is_initialized()"))
+            {
+                outputFieldName = outputFieldName.Substring(0, outputFieldName.Length - 17);
+                _source.WriteLine($"var has{outputFieldName} = packet.ReadBit(\"Has{outputFieldName}\", indexes);");
                 return;
             }
 
